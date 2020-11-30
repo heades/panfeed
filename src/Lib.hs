@@ -2,6 +2,7 @@
 module Lib () where
 
 import Utils
+
 import Data.Text
 import Data.XML.Types as XML
 import qualified Text.Atom.Feed as Atom
@@ -16,7 +17,7 @@ today = getCurrentTime >>= return . toGregorian . utctDay
 todayText :: IO Text
 todayText = do
   (year,month,day) <- today
-  return.pack.show $ (show year)++"-"++(show month)++"-"++(show day)
+  return.pack $ (show year)++"-"++(show month)++"-"++(show day)
 
 create :: Feed -> Title -> URI -> IO ()
 create (Feed feed) (Title title) uri = do  
