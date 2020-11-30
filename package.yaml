@@ -29,6 +29,9 @@ library:
   dependencies:
   - network-uri >= 2.6
   - path >= 0.8
+  - text
+  - xml-types
+  - time
   
 executables:
   panfeed-exe:

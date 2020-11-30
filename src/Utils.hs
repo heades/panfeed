@@ -1,5 +1,10 @@
 {-# LANGUAGE ViewPatterns #-}
-module Utils () where
+module Utils (
+  module Network.URI,
+  module Path.Posix,
+  Feed(..),
+  Title(..)
+) where
 
 import Network.URI
 import Path.Posix
