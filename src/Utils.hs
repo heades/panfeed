@@ -1,80 +1,115 @@
 {-# LANGUAGE ViewPatterns #-}
 module Utils (
+  module System.IO,
+  putStrErr,
   module Network.URI,
-  module Path.Posix,
-  Feed(..),
-  Title(..)
+  module Path.Posix,  
+  panfeedOpts,
+  checkInputs,
+  help,
+  Error(..),
+  Args(..)
 ) where
 
+import System.IO
 import Network.URI
 import Path.Posix
+import System.Console.GetOpt
 
-newtype Title = Title String
-newtype Feed  = Feed (SomeBase File)
-newtype Post  = Post (SomeBase File)
 newtype Error = Error String
+  deriving (Show,Eq)
 
-data Args = Help | New Feed Title URI | Add Feed Post
+putStrErr :: String -> IO ()
+putStrErr = hPutStrLn stderr
 
-instance (Show Title) where
-  show (Title s) = s  
-
-instance (Show Error) where
-  show (Error s) = s
-
-showArgs :: Args -> String
-showArgs Help = "--help"
-showArgs (New (Feed feed) (Title title) uri) = unwords ["--new",(show feed),title,uriStr]
-  where
-    uriStr = (uriToString id uri) ""
-showArgs (Add (Feed feed) (Post post)) = unwords ["--add",(show feed),(show post)]
-
-instance (Show Args) where
-  show = showArgs
+data Options = OHelp
+             | ONew
+             | OURL (Either Error URI)
+             | OTitle String
+             | OAdd (Either Error (SomeBase File))
+  deriving (Show,Eq)
 
 cmdErr :: String -> Either Error a
 cmdErr str = Left (Error str)
 
-help :: String
-help = "panfeed is a Pandoc-based websites RSS feed manager.\n\n"++
-       "Availiable options:\n" ++
-       "--help               : This help message.\n" ++        
-       "--new feed title url : create a new empty feed with metadata title and url.\n" ++
-       "--add feed post      : add post as a new entry to feed.\n"
+options :: [OptDescr Options]
+options = [ Option ['h'] ["help"]  (NoArg OHelp)                           "the help message.",
+            Option ['n'] ["new"]   (NoArg ONew)                            "create a new empty FEED.rss (requires --url and --title).",
+            Option ['u'] ["url"]   (ReqArg parseURL  "URL")                "specify the URL to a new feeds website.",
+            Option ['t'] ["title"] (ReqArg OTitle     "TITLE")             "specify the TITLE to a new feed.",
+            Option ['a'] ["add"]   (ReqArg (parseAdd ".md")  "POST.md")       "add the markdown file POST.md to FEED.rss."]
+
+parseURL :: String -> Options
+parseURL url = OURL $ 
+  case (parseURI url) of
+    Just uri -> Right $ uri
+    Nothing -> Left . Error $ "invalid url"
 
 fileExt :: SomeBase File -> Maybe String
 fileExt (Abs p) = fileExtension p
 fileExt (Rel p) = fileExtension p
 
-parseArgsError :: [String] -> String -> Either Error Args
-parseArgsError args msg = cmdErr $ (unwords args) ++ msg++"\n\n" ++ help
+parseFilePath :: String -> String -> Either Error (SomeBase File)
+parseFilePath ext path = do
+  case mpath of
+    Just p ->
+      case (fileExt p) of
+        Just e -> 
+          if e == ext
+          then Right p
+          else Left . Error $ "invalid file extension "++e
+        Nothing -> Left . Error $ "invalid file path "++(show p)
+ where
+    mpath = parseSomeFile path :: Maybe (SomeBase File)
 
-parseArgs :: String -> Either Error Args
-parseArgs (words -> ["--help"]) = Right Help
-parseArgs (words -> args@("--new":feed:title:url:[])) =
+parseAdd :: String -> String -> Options
+parseAdd ext path = OAdd $ parseFilePath ext path
+
+help :: String
+help = usageInfo header options
+ where
+    header = "panfeed is a Pandoc-based websites RSS feed manager.\n\npandoc [OPTIONS] FEED.rss\n\nAvailable OPTIONS:"
+
+panfeedOpts :: [String] -> IO ([Options], [String])
+panfeedOpts argv =
+  case getOpt RequireOrder options argv of
+    (o,n,[]) -> return (o,n)
+    (_,_,errs) -> ioError . userError $ concat errs ++ help
+
+data Args = Help
+          | New (SomeBase File) URI String
+          | Add (SomeBase File) (SomeBase File)
+ deriving Show
+
+parseNew :: String -> Either Error URI -> String -> Either Error Args
+parseNew feed (Right url) title =
   case mfeed of
-    Just feedPath ->
-      case (fileExt feedPath) of
-        (Just ".rss") ->
-          case (parseURI url) of
-            Just uri -> Right $ New (Feed feedPath) (Title title) uri
-            Nothing -> parseArgsError args " : invalid url provided."
-        Nothing -> parseArgsError args " : feed file extension must be '.rss'."
-    Nothing -> parseArgsError args " : invalid path to the feed provided."
- where  
-   mfeed = parseSomeFile feed :: Maybe (SomeBase File)
-parseArgs (words -> args@("--add":feed:post:[])) =
-  case (mfeed,mpost) of
-    (Just feedPath, Just postPath) ->
-      case (fileExt feedPath, fileExt postPath) of
-        (Just ".rss", Just ".md") -> Right $ Add (Feed feedPath) (Post postPath)
-        (Nothing, Just ".md") -> parseArgsError args " : feed file extension must be '.rss'."
-        (Just ".rss", Nothing) -> parseArgsError args " : post file extension must be '.md'."
-        (_, _) -> parseArgsError args " : feed and post file extensions must be '.rss' and '.md' respectively."
-    (Nothing, Just _) -> parseArgsError args " : invalid path to the feed provided."
-    (Just _, Nothing) -> parseArgsError args " : invalid path to the post provided."
-    (Nothing,Nothing) -> parseArgsError args " : invalid path to the both feed and post provided."   
-  where
-    mfeed = parseSomeFile feed :: Maybe (SomeBase File)
-    mpost = parseSomeFile post :: Maybe (SomeBase File)
-parseArgs (words -> args) = parseArgsError args " : not a valid command."
+    Right feedpath -> Right $ New feedpath url title
+    Left err -> Left err
+ where
+   mfeed = parseFilePath ".rss" feed    
+parseNew feed (Left err) title = Left err
+   
+newOpt :: String -> [Options] -> Either Error Args
+newOpt feed (ONew :  OURL url : OTitle title : []) = parseNew feed url title
+newOpt feed (OURL url : ONew : OTitle title : [])  = parseNew feed url title
+newOpt feed (OURL url : OTitle title : ONew : [])  = parseNew feed url title
+newOpt feed (OTitle title : OURL url : ONew : [])  = parseNew feed url title
+newOpt feed (OTitle title : ONew : OURL url : [])  = parseNew feed url title
+newOpt feed (ONew : OTitle title : OURL url : [])  = parseNew feed url title
+newOpt _ _ = Left . Error $ "--new requires both --url and --title see --help."
+
+addOpt :: String -> Either Error (SomeBase File) -> Either Error Args
+addOpt feed (Right post) =
+  case mfeed of
+    Right feedPath -> Right $ Add feedPath post
+    Left err -> Left err
+ where
+   mfeed = parseFilePath ".rss" feed
+addOpt feed (Left err) = Left err
+
+checkInputs :: [Options] -> [String] -> Either Error Args
+checkInputs [OHelp] [] = Right Help
+checkInputs o [feed] | ONew `elem` o = newOpt feed o
+checkInputs [OAdd post] [feed] = addOpt feed post
+checkInputs _ _ = Left . Error $ "Invalid options see --help."
