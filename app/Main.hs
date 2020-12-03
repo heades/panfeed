@@ -9,4 +9,4 @@ main = do
   (o, n) <- panfeedOpts args
   case checkInputs o n of
     Right arg -> hook arg
-    Left (Error err) -> putStrErr $ err ++ "\n\n"++help
+    Left (Error err) -> putStrErr err

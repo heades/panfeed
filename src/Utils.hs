@@ -20,7 +20,7 @@ newtype Error = Error String
   deriving (Show,Eq)
 
 putStrErr :: String -> IO ()
-putStrErr = hPutStrLn stderr
+putStrErr err = hPutStrLn stderr $ err ++"\n\n"++help
 
 data Options = OHelp
              | ONew
