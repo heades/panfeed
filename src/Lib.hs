@@ -1,4 +1,5 @@
 {-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE ViewPatterns #-}
 module Lib (
   module Utils,
   hook
@@ -11,6 +12,9 @@ import Data.Text.Lazy as L
 import Data.XML.Types as XML
 import qualified Text.Atom.Feed as Atom
 import qualified Text.Atom.Feed.Export as Export (textFeed)
+import qualified Text.Feed.Import as Import (parseFeedFromFile)
+import qualified Text.Feed.Query as Query (getFeedHome)
+import qualified Text.Feed.Types as Types
 
 import Data.Time.Clock  as C
 import Data.Time.Calendar
@@ -21,8 +25,8 @@ import qualified Text.Pandoc.Shared as TS
 
 hook :: Args -> IO ()
 hook Help = putStrLn help
-hook (New feed uri title) = create feed title uri
-hook (Add feed post) = add feed post
+hook (New feed uri title)     = create feed title uri
+hook (Add feed postPath post) = add feed postPath post
 
 today :: IO (Integer,Int,Int)
 today = C.getCurrentTime >>= return . toGregorian . utctDay
@@ -32,16 +36,20 @@ todayText = do
   (year,month,day) <- today
   return.T.pack $ (show year)++"-"++(show month)++"-"++(show day)
 
-create :: SomeBase File -> String -> URI -> IO ()
-create feedPath title uri = do
-  let path = fromSomeFile feedPath
-  feed <- newfeed  
+outputFeed :: Atom.Feed -> FilePath -> IO ()
+outputFeed feed path = do
   let mrenderedfeed = Export.textFeed $ feed
   case mrenderedfeed of
     Just renderedfeed -> do
       let rfeed = L.unpack renderedfeed      
       writeFile path rfeed
     Nothing -> putStrErr $ "Failed to create new feed: "++path
+
+create :: SomeBase File -> String -> URI -> IO ()
+create feedPath title uri = do
+  let path = fromSomeFile feedPath
+  feed <- newfeed  
+  outputFeed feed path
  where
    newfeed :: IO Atom.Feed
    newfeed = do     
@@ -54,31 +62,96 @@ create feedPath title uri = do
 readerOpts :: P.ReaderOptions
 readerOpts = P.ReaderOptions P.pandocExtensions True 1 1 P.def P.def "" P.RejectChanges True
 
-getMeta :: SomeBase File -> IO (Either P.PandocError (String,String))
+--Retrieves the title, date, and abstract from the markdown file post.
+getMeta :: SomeBase File -> IO (Either P.PandocError (Maybe (String,String,String)))
 getMeta post = do
   let postPath = fromSomeFile post
   mkd <- (readFile postPath) >>= (return . T.pack)
   P.runIO $ do
     (P.Pandoc m b) <- P.readMarkdown readerOpts mkd
-    let titleP = show $ TS.stringify $ P.docTitle m
-    let dateP = show $ TS.stringify $ P.docDate m
-    return (titleP,dateP)
+    let titleP = T.unpack $ TS.stringify $ P.docTitle m
+    let dateP = T.unpack $ TS.stringify $ P.docDate m
+    case P.lookupMeta (T.pack "abstract") m of
+      Just (P.MetaInlines a) -> do
+        let abstractP = T.unpack $ TS.stringify $ a
+        return . Just $ (titleP,abstractP,dateP)
+      _ -> return . Just $ (titleP,"",dateP)      
 
-entry :: String -> String -> URI -> Atom.Entry
-entry title date url = undefined
+-- Builds the absoulte url to the post located at postPath.  The
+-- returned URL is of the form:
+--     freeId/mpostsPath/postpath
+postURL :: URI -> Maybe URI -> SomeBase File -> Maybe URI
+postURL feedId mpostsPath postPath =
+  case mpostsPath of
+    Just postsPath ->
+      do postRel <- base
+         postFile <- parseRelURI postRel
+         (feedId `appendRelURI` postsPath) >>= (\x -> appendRelURI x postFile)
+    Nothing ->
+      do postRel <- base
+         postFile <- parseRelURI postRel
+         appendRelURI feedId postFile
+ where
+   base :: Maybe FilePath
+   base = (replaceExt ".html" $ fileName postPath) >>= (return . toFilePath)
 
-feedUrl :: SomeBase File -> URI
-feedUrl = undefined
+getFeedId :: Types.Feed -> Either Error URI
+getFeedId (Types.AtomFeed (Atom.Feed id _ _ _ _ _ _ _ _ _ _ _ _ _ _)) = parseURI . T.unpack $ id
+getFeedId feed = Left . Error $ "Failed to parse feed"
 
-add :: SomeBase File -> SomeBase File -> IO ()
-add feed post = do  
-  let feedPath = fromSomeFile feed
+feedId :: (SomeBase File) -> Types.Feed -> Either Error URI
+feedId feedPath feed =
+  case getFeedId feed of  
+    Right id -> Right id
+    Left _ -> Left . Error $ "Failed to retrieve url from feed: "++(show feedPath)
+
+importFeed :: SomeBase File -> IO (Either Error Types.Feed)
+importFeed (fromSomeFile -> feedPath) = do
+  mfeed <- Import.parseFeedFromFile feedPath
+  return $ case mfeed of
+    Just feed -> Right feed
+    Nothing -> Left . Error $ "Failed to parse feed: "++(show feedPath)    
+
+entry :: String -> String -> String -> String -> String -> Atom.Entry
+entry id title date url abstract =
+  (Atom.nullEntry
+     (T.pack id)
+     (Atom.TextString (T.pack title))
+     (T.pack date))
+  { Atom.entryAuthors = [Atom.nullPerson]
+  , Atom.entryLinks = [Atom.nullLink (T.pack url)]
+  , Atom.entryContent = Just (Atom.HTMLContent (T.pack abstract))
+  }
+
+updateFeed :: Types.Feed -> Atom.Entry -> IO (Maybe Atom.Feed)
+updateFeed (Types.AtomFeed feed) entry = do
+  date <- todayText
+  return . Just $ feed { Atom.feedUpdated = date,
+                         Atom.feedEntries = entry:(Atom.feedEntries feed) } 
+updateFeed _ _ = return Nothing
+
+add :: SomeBase File -> Maybe URI -> SomeBase File -> IO ()
+add feedPath postPath post = do    
   d <- getMeta post
   case d of
-    Right (t,d) -> do
-      let url = feedUrl feed
-      let newEntry = entry t d url
-      return ()
-    Left e -> return ()
-  return ()
+    Right (Just (t,a,d)) -> do
+      mfeed <- importFeed feedPath
+      case mfeed of
+        Right feed -> do
+          let mid = feedId feedPath feed
+          case mid of
+            Right id -> do
+              case postURL id postPath post of
+                Just url -> do
+                  let newEntry = entry (uriToString id) t d (uriToString url) a
+                  mupFeed <- updateFeed feed newEntry
+                  case mupFeed of
+                    Just updatedFeed -> do                      
+                      outputFeed updatedFeed $ fromSomeFile feedPath
+                    Nothing -> putStrErr $ "Failed to add "++(show postPath)++" to feed "++(show feed)
+                Nothing -> putStrErr $ "Failed to retrieve url from feed: "++(show feed)
+            Left (Error err) -> putStrErr err
+        Left (Error err) -> putStrErr err
+    Right Nothing -> putStrErr $ "Failed to retrieve metadata from post: "++(show post)  
+    Left e -> putStrErr $ "Failed to retrieve metadata from post: "++(show post)  
 
