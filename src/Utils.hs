@@ -42,8 +42,8 @@ cmdErr str = Left (Error str)
 options :: [OptDescr Options]
 options = [ Option ['h'] ["help"]      (NoArg OHelp)                          "the help message.",
             Option ['n'] ["new"]       (NoArg ONew)                           "create a new empty FEED.rss (requires --url and --title).",
-            Option ['u'] ["url"]       (ReqArg parseURL         "URL")        "specify the URL to a new feeds website.",
-            Option ['t'] ["title"]     (ReqArg OTitle           "TITLE")      "specify the TITLE to a new feed.",
+            Option []    ["url"]       (ReqArg parseURL         "URL")        "specify the URL to a new feeds website.",
+            Option []    ["title"]     (ReqArg OTitle           "TITLE")      "specify the TITLE to a new feed.",
             Option ['a'] ["add"]       (ReqArg (parseAdd ".md") "POST.md")    "add the markdown file POST.md to FEED.rss.",
             Option []    ["post-path"] (ReqArg parsePostPath    "PATH")       "specify the releative path of the URL to where the HTML posts live (requires --add)." ]
 
