@@ -26,7 +26,7 @@ import qualified Text.Pandoc.Shared as TS
 hook :: Args -> IO ()
 hook Help = putStrLn help
 hook (New feed uri title)     = create feed title uri
-hook (Add feed postPath post) = add feed postPath post
+hook (Add feed feedDestPath postPath post) = add feed feedDestPath postPath post
 
 today :: IO (Integer,Int,Int)
 today = C.getCurrentTime >>= return . toGregorian . utctDay
@@ -128,8 +128,8 @@ updateFeed (Types.AtomFeed feed) entry = do
                          Atom.feedEntries = entry:(Atom.feedEntries feed) } 
 updateFeed _ _ = return Nothing
 
-add :: FPath -> Maybe URI -> FPath -> IO ()
-add feedPath postPath post = do    
+add :: FPath -> FPath -> Maybe URI -> FPath -> IO ()
+add feedPath feedDestPath postPath post = do    
   d <- getMeta post
   case d of
     Right (Just (t,a,d)) -> do
@@ -145,11 +145,10 @@ add feedPath postPath post = do
                   mupFeed <- updateFeed feed newEntry
                   case mupFeed of
                     Just updatedFeed -> do                      
-                      outputFeed updatedFeed (filePath feedPath)
+                      outputFeed updatedFeed (filePath feedDestPath)
                     Nothing -> putStrErr $ "Failed to add "++(show postPath)++" to feed "++(show feed)
                 Nothing -> putStrErr $ "Failed to retrieve url from feed: "++(show feed)
             Left (Error err) -> putStrErr err
         Left (Error err) -> putStrErr err
     Right Nothing -> putStrErr $ "Failed to retrieve metadata from post: "++(show post)  
     Left e -> putStrErr $ "Failed to retrieve metadata from post: "++(show post)  
-

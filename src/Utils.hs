@@ -1,3 +1,4 @@
+{-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE TupleSections #-}
 {-# LANGUAGE ViewPatterns #-}
 module Utils (
@@ -51,6 +52,7 @@ data Options = OHelp
              | OTitle String
              | OAdd (Either Error FPath)
              | OPostPath (Either Error U.URI)
+             | ODestPath (Either Error FPath)
   deriving (Show,Eq)
 
 cmdErr :: String -> Either Error a
@@ -62,7 +64,8 @@ options = [ Option ['h'] ["help"]      (NoArg OHelp)                          "t
             Option []    ["url"]       (ReqArg parseURL         "URL")        "specify the URL to a new feeds website.",
             Option []    ["title"]     (ReqArg OTitle           "TITLE")      "specify the TITLE to a new feed.",
             Option ['a'] ["add"]       (ReqArg (parseAdd ".md") "POST.md")    "add the markdown file POST.md to FEED.xml.",
-            Option []    ["post-path"] (ReqArg parsePostPath    "PATH")       "specify the releative path of the URL to where the HTML posts live (requires --add)." ]
+            Option []    ["post-path"] (ReqArg parsePostPath    "PATH")       "specify the releative path of the URL to where the HTML posts live (requires --add).",
+            Option []    ["feed-dest"] (ReqArg parseDestPath    "PATH")       "the PATH to the newly created feed (requires --add)." ]
 
 feedExt :: String
 feedExt = ".xml"
@@ -121,6 +124,9 @@ parsePostPath postPathStr = OPostPath $
     Just postPath -> Right postPath
     Nothing -> Left . Error $ "invalied post path: "++postPathStr
 
+parseDestPath :: String -> Options
+parseDestPath destPathStr = ODestPath $ parseFilePath destPathStr
+
 help :: String
 help = usageInfo header options
  where
@@ -134,7 +140,8 @@ panfeedOpts argv =
 
 data Args = Help
           | New FPath U.URI String
-          | Add FPath (Maybe U.URI) FPath
+          -- Add feedPath feedDestPath postURI  mdPath
+          | Add FPath FPath (Maybe U.URI) FPath
  deriving Show
 
 parseNew :: String -> Either Error U.URI -> String -> Either Error Args
@@ -158,29 +165,37 @@ newOpt feed (OTitle title : ONew : OURL url : [])  = parseNew feed url title
 newOpt feed (ONew : OTitle title : OURL url : [])  = parseNew feed url title
 newOpt _ _ = Left . Error $ "--new requires both --url and --title see --help."
 
-parseAddPostPath :: String -> Either Error FPath -> Either Error U.URI -> Either Error Args
-parseAddPostPath feed (Right post) (Right path) =
-  case parseFilePath feed of
-    Right feedPath -> case checkExt feedExt feedPath of
-      Right _ -> Right $ Add feedPath (Just path) post
-      Left err -> Left err
-    Left err -> Left err
-parseAddPostPath feed (Left (Error err1)) (Left (Error err2)) = Left . Error $ err1 ++ "\n\n" ++ err2
-parseAddPostPath feed (Left err) _ = Left err
-parseAddPostPath feed _ (Left err) = Left err
+parseAddPostPath :: FilePath -> Maybe (Either Error FPath) -> Either Error FPath -> Either Error U.URI -> Either Error Args
+parseAddPostPath feed destPath (Right post) (Right path) =
+  case (parseFilePath feed, destPath) of
+    (Right feedPath, Just (Right feedDestPath)) ->
+      case (checkExt feedExt feedPath, checkExt feedExt feedDestPath) of
+        (Right _, Right _) -> Right $ Add feedPath feedDestPath (Just path) post
+        (Right _, Left err) -> Left err
+        (Left err, Right _) -> Left err
+        (Left (Error err1), Left (Error err2)) -> Left . Error $ err1 ++ "\n\n" ++ err2
+    (Right feedPath, Nothing) ->
+      case (checkExt feedExt feedPath) of
+        (Right _) -> Right $ Add feedPath feedPath (Just path) post
+        (Left err) -> Left err
+    (Left err, Nothing) -> Left err
+    (Right _, Just (Left err)) -> Left err
+    (Left (Error err1), Just (Left (Error err2))) -> Left . Error $ err1 ++ "\n\n" ++ err2
+parseAddPostPath feed destPath (Left (Error err1)) (Left (Error err2)) = Left . Error $ err1 ++ "\n\n" ++ err2
+parseAddPostPath feed destPath (Left err) _ = Left err
+parseAddPostPath feed destPath _ (Left err) = Left err
 
-addOpt :: String -> [Options] -> Either Error Args
-addOpt feed [OAdd mpost] =
-  case mpost of
-    (Right post) ->
-      case parseFilePath feed of
-        Right feedPath -> case checkExt feedExt feedPath of
-          Right _ -> Right $ Add feedPath Nothing post
-          Left err -> Left err
-        Left err -> Left err
-    (Left err) -> Left err
-addOpt feed (OAdd mpost:OPostPath mpath:[]) = parseAddPostPath feed mpost mpath
-addOpt feed (OPostPath mpath:OAdd mpost:[]) = parseAddPostPath feed mpost mpath
+addOpt :: FilePath -> [Options] -> Either Error Args
+addOpt feed [OAdd mpost] = parseAddPostPath feed Nothing mpost (Right U.nullURI)
+addOpt feed (OAdd mpost:OPostPath mpath:[]) = parseAddPostPath feed Nothing mpost mpath
+addOpt feed (OPostPath mpath:OAdd mpost:[]) = parseAddPostPath feed Nothing mpost mpath
+addOpt feed (OAdd mpost:OPostPath mpath:ODestPath destPath:[]) = parseAddPostPath feed (Just destPath) mpost mpath
+addOpt feed (OAdd mpost:ODestPath destPath:OPostPath mpath:[]) = parseAddPostPath feed (Just destPath) mpost mpath
+addOpt feed (ODestPath destPath:OAdd mpost:OPostPath mpath:[]) = parseAddPostPath feed (Just destPath) mpost mpath
+addOpt feed (ODestPath destPath:OPostPath mpath:OAdd mpost:[]) = parseAddPostPath feed (Just destPath) mpost mpath
+addOpt feed (OPostPath mpath:ODestPath destPath:OAdd mpost:[]) = parseAddPostPath feed (Just destPath) mpost mpath
+addOpt feed (OPostPath mpath:OAdd mpost:ODestPath destPath:[]) = parseAddPostPath feed (Just destPath) mpost mpath
+addOpt _ _ = Left . Error $ "in valid --add.\n\n"++help
 
 isAdd :: Options -> Bool
 isAdd (OAdd _) = True
