@@ -1,9 +1,12 @@
+{-# LANGUAGE TupleSections #-}
 {-# LANGUAGE ViewPatterns #-}
 module Utils (
   module System.IO,
+  module System.FilePath,
+  FPath(..),
+  filePath,
   putStrErr,
   U.URI(..),
-  module Path.Posix,
   panfeedOpts,
   checkInputs,
   help,
@@ -19,8 +22,22 @@ module Utils (
 
 import System.IO
 import qualified Network.URI as U
-import Path.Posix
+import System.FilePath
 import System.Console.GetOpt
+
+data FPath = Rel FilePath | Abs FilePath
+  deriving (Show, Eq)
+
+mapFPath :: (FilePath -> FilePath) -> FPath -> FPath
+mapFPath f (Rel p) = Rel . f $ p
+mapFPath f (Abs p) = Abs . f $ p
+
+foldFPath :: (FilePath -> a) -> FPath -> a
+foldFPath f (Rel p) = f p
+foldFPath f (Abs p) = f p
+
+filePath :: FPath -> FilePath
+filePath = foldFPath id
 
 newtype Error = Error String
   deriving (Show,Eq)
@@ -32,7 +49,7 @@ data Options = OHelp
              | ONew
              | OURL (Either Error U.URI)
              | OTitle String
-             | OAdd (Either Error (SomeBase File))
+             | OAdd (Either Error FPath)
              | OPostPath (Either Error U.URI)
   deriving (Show,Eq)
 
@@ -41,11 +58,14 @@ cmdErr str = Left (Error str)
 
 options :: [OptDescr Options]
 options = [ Option ['h'] ["help"]      (NoArg OHelp)                          "the help message.",
-            Option ['n'] ["new"]       (NoArg ONew)                           "create a new empty FEED.rss (requires --url and --title).",
+            Option ['n'] ["new"]       (NoArg ONew)                           "create a new empty FEED.xml (requires --url and --title).",
             Option []    ["url"]       (ReqArg parseURL         "URL")        "specify the URL to a new feeds website.",
             Option []    ["title"]     (ReqArg OTitle           "TITLE")      "specify the TITLE to a new feed.",
-            Option ['a'] ["add"]       (ReqArg (parseAdd ".md") "POST.md")    "add the markdown file POST.md to FEED.rss.",
+            Option ['a'] ["add"]       (ReqArg (parseAdd ".md") "POST.md")    "add the markdown file POST.md to FEED.xml.",
             Option []    ["post-path"] (ReqArg parsePostPath    "PATH")       "specify the releative path of the URL to where the HTML posts live (requires --add)." ]
+
+feedExt :: String
+feedExt = ".xml"
 
 uriToString :: U.URI -> String
 uriToString uri = U.uriToString id uri ""
@@ -67,32 +87,33 @@ parseURI url = case (U.parseURI url) of
 parseURL :: String -> Options
 parseURL = OURL . parseURI
 
-fileExt :: SomeBase File -> Maybe String
-fileExt (Abs p) = fileExtension p
-fileExt (Rel p) = fileExtension p
+fileExt :: FPath -> String
+fileExt = foldFPath takeExtension
 
-fileName :: SomeBase File -> Path Rel File
-fileName (Abs p) = filename p
-fileName (Rel p) = filename p
+fileName :: FPath -> FPath
+fileName = mapFPath takeBaseName
 
-replaceExt :: String -> Path b File -> Maybe (Path b File)
-replaceExt ext p = replaceExtension ext p
+replaceExt :: String -> FPath -> FPath
+replaceExt ext = mapFPath (\x -> replaceExtension x ext)
 
-parseFilePath :: String -> String -> Either Error (SomeBase File)
-parseFilePath ext path = do
-  case mpath of
-    Just p ->
-      case (fileExt p) of
-        Just e -> 
-          if e == ext
-          then Right p
-          else Left . Error $ "invalid file extension "++e
-        Nothing -> Left . Error $ "invalid file path "++(show p)
- where
-    mpath = parseSomeFile path :: Maybe (SomeBase File)
+parseFilePath :: String -> Either Error FPath
+parseFilePath path = if (isValid path)
+                     then Right $ if (isAbsolute path)
+                                  then Abs $ path
+                                  else Rel $ path                      
+                      else Left . Error $ "invalid file path "++path
+
+checkExt :: String -> FPath -> Either Error FPath
+checkExt ext p | foldFPath (\x -> takeExtension x == ext) p = Right p
+checkExt ext p | otherwise = Left . Error $ "invalid file path extension "++ext
 
 parseAdd :: String -> String -> Options
-parseAdd ext path = OAdd $ parseFilePath ext path
+parseAdd ext path = OAdd $
+  case fp of
+    Right p -> checkExt ext p
+    _ -> fp
+ where
+   fp = parseFilePath path
 
 parsePostPath :: String -> Options
 parsePostPath postPathStr = OPostPath $
@@ -103,7 +124,7 @@ parsePostPath postPathStr = OPostPath $
 help :: String
 help = usageInfo header options
  where
-    header = "panfeed is a Pandoc-based websites RSS feed manager.\n\npandoc [OPTIONS] FEED.rss\n\nAvailable OPTIONS:"
+    header = "panfeed is a Pandoc-based websites RSS feed manager.\n\npandoc [OPTIONS] FEED.xml\n\nAvailable OPTIONS:"
 
 panfeedOpts :: [String] -> IO ([Options], [String])
 panfeedOpts argv =
@@ -112,17 +133,20 @@ panfeedOpts argv =
     (_,_,errs) -> ioError . userError $ concat errs ++ help
 
 data Args = Help
-          | New (SomeBase File) U.URI String
-          | Add (SomeBase File) (Maybe U.URI) (SomeBase File)
+          | New FPath U.URI String
+          | Add FPath (Maybe U.URI) FPath
  deriving Show
 
 parseNew :: String -> Either Error U.URI -> String -> Either Error Args
 parseNew feed (Right url) title =
   case mfeed of
-    Right feedpath -> Right $ New feedpath url title
+    Right feedpath ->
+      case checkExt feedExt feedpath of
+        Right _ -> Right $ New feedpath url title
+        Left err -> Left err
     Left err -> Left err
  where
-   mfeed = parseFilePath ".rss" feed    
+   mfeed = parseFilePath feed    
 parseNew feed (Left err) title = Left err
    
 newOpt :: String -> [Options] -> Either Error Args
@@ -134,11 +158,13 @@ newOpt feed (OTitle title : ONew : OURL url : [])  = parseNew feed url title
 newOpt feed (ONew : OTitle title : OURL url : [])  = parseNew feed url title
 newOpt _ _ = Left . Error $ "--new requires both --url and --title see --help."
 
-parseAddPostPath :: String -> Either Error (SomeBase File) -> Either Error U.URI -> Either Error Args
+parseAddPostPath :: String -> Either Error FPath -> Either Error U.URI -> Either Error Args
 parseAddPostPath feed (Right post) (Right path) =
-  case parseFilePath ".rss" feed of
-    Right feedPath -> Right $ Add feedPath (Just path) post
-    Left err       -> Left err
+  case parseFilePath feed of
+    Right feedPath -> case checkExt feedExt feedPath of
+      Right _ -> Right $ Add feedPath (Just path) post
+      Left err -> Left err
+    Left err -> Left err
 parseAddPostPath feed (Left (Error err1)) (Left (Error err2)) = Left . Error $ err1 ++ "\n\n" ++ err2
 parseAddPostPath feed (Left err) _ = Left err
 parseAddPostPath feed _ (Left err) = Left err
@@ -147,8 +173,10 @@ addOpt :: String -> [Options] -> Either Error Args
 addOpt feed [OAdd mpost] =
   case mpost of
     (Right post) ->
-      case parseFilePath ".rss" feed of
-        Right feedPath -> Right $ Add feedPath Nothing post
+      case parseFilePath feed of
+        Right feedPath -> case checkExt feedExt feedPath of
+          Right _ -> Right $ Add feedPath Nothing post
+          Left err -> Left err
         Left err -> Left err
     (Left err) -> Left err
 addOpt feed (OAdd mpost:OPostPath mpath:[]) = parseAddPostPath feed mpost mpath

@@ -45,9 +45,9 @@ outputFeed feed path = do
       writeFile path rfeed
     Nothing -> putStrErr $ "Failed to create new feed: "++path
 
-create :: SomeBase File -> String -> URI -> IO ()
+create :: FPath -> String -> URI -> IO ()
 create feedPath title uri = do
-  let path = fromSomeFile feedPath
+  let path = filePath feedPath
   feed <- newfeed  
   outputFeed feed path
  where
@@ -63,9 +63,9 @@ readerOpts :: P.ReaderOptions
 readerOpts = P.ReaderOptions P.pandocExtensions True 1 1 P.def P.def "" P.RejectChanges True
 
 --Retrieves the title, date, and abstract from the markdown file post.
-getMeta :: SomeBase File -> IO (Either P.PandocError (Maybe (String,String,String)))
-getMeta post = do
-  let postPath = fromSomeFile post
+getMeta :: FPath -> IO (Either P.PandocError (Maybe (String,String,String)))
+getMeta path = do
+  let postPath = filePath path
   mkd <- (readFile postPath) >>= (return . T.pack)
   P.runIO $ do
     (P.Pandoc m b) <- P.readMarkdown readerOpts mkd
@@ -80,33 +80,31 @@ getMeta post = do
 -- Builds the absoulte url to the post located at postPath.  The
 -- returned URL is of the form:
 --     freeId/mpostsPath/postpath
-postURL :: URI -> Maybe URI -> SomeBase File -> Maybe URI
+postURL :: URI -> Maybe URI -> FPath -> Maybe URI
 postURL feedId mpostsPath postPath =
   case mpostsPath of
     Just postsPath ->
-      do postRel <- base
-         postFile <- parseRelURI postRel
+      do postFile <- parseRelURI postRel
          (feedId `appendRelURI` postsPath) >>= (\x -> appendRelURI x postFile)
     Nothing ->
-      do postRel <- base
-         postFile <- parseRelURI postRel
+      do postFile <- parseRelURI postRel
          appendRelURI feedId postFile
  where
-   base :: Maybe FilePath
-   base = (replaceExt ".html" $ fileName postPath) >>= (return . toFilePath)
+   postRel :: FilePath
+   postRel = filePath $ (replaceExt ".html" $ fileName postPath)
 
 getFeedId :: Types.Feed -> Either Error URI
 getFeedId (Types.AtomFeed (Atom.Feed id _ _ _ _ _ _ _ _ _ _ _ _ _ _)) = parseURI . T.unpack $ id
 getFeedId feed = Left . Error $ "Failed to parse feed"
 
-feedId :: (SomeBase File) -> Types.Feed -> Either Error URI
+feedId :: FPath -> Types.Feed -> Either Error URI
 feedId feedPath feed =
   case getFeedId feed of  
     Right id -> Right id
     Left _ -> Left . Error $ "Failed to retrieve url from feed: "++(show feedPath)
 
-importFeed :: SomeBase File -> IO (Either Error Types.Feed)
-importFeed (fromSomeFile -> feedPath) = do
+importFeed :: FPath -> IO (Either Error Types.Feed)
+importFeed (filePath -> feedPath) = do
   mfeed <- Import.parseFeedFromFile feedPath
   return $ case mfeed of
     Just feed -> Right feed
@@ -130,7 +128,7 @@ updateFeed (Types.AtomFeed feed) entry = do
                          Atom.feedEntries = entry:(Atom.feedEntries feed) } 
 updateFeed _ _ = return Nothing
 
-add :: SomeBase File -> Maybe URI -> SomeBase File -> IO ()
+add :: FPath -> Maybe URI -> FPath -> IO ()
 add feedPath postPath post = do    
   d <- getMeta post
   case d of
@@ -147,7 +145,7 @@ add feedPath postPath post = do
                   mupFeed <- updateFeed feed newEntry
                   case mupFeed of
                     Just updatedFeed -> do                      
-                      outputFeed updatedFeed $ fromSomeFile feedPath
+                      outputFeed updatedFeed (filePath feedPath)
                     Nothing -> putStrErr $ "Failed to add "++(show postPath)++" to feed "++(show feed)
                 Nothing -> putStrErr $ "Failed to retrieve url from feed: "++(show feed)
             Left (Error err) -> putStrErr err
