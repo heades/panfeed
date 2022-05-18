@@ -12,6 +12,7 @@ module Utils (
   checkInputs,
   help,
   Error(..),
+  errorToStr,
   Args(..),
   parseURI,
   parseRelURI,
@@ -43,6 +44,9 @@ filePath = foldFPath id
 newtype Error = Error String
   deriving (Show,Eq)
 
+errorToStr :: Error -> String
+errorToStr (Error s) = s
+
 putStrErr :: String -> IO ()
 putStrErr err = hPutStrLn stderr $ err ++"\n\n"++help
 
@@ -51,6 +55,7 @@ data Options = OHelp
              | OURL (Either Error U.URI)
              | OTitle String
              | OAdd (Either Error FPath)
+             | OAddExt (Either Error FPath)
              | OPostPath (Either Error U.URI)
              | ODestPath (Either Error FPath)
   deriving (Show,Eq)
@@ -64,7 +69,8 @@ options = [ Option ['h'] ["help"]      (NoArg OHelp)                          "t
             Option []    ["url"]       (ReqArg parseURL         "URL")        "specify the URL to a new feeds website.",
             Option []    ["title"]     (ReqArg OTitle           "TITLE")      "specify the TITLE to a new feed.",
             Option ['a'] ["add"]       (ReqArg (parseAdd ".md") "POST.md")    "add the markdown file POST.md to FEED.xml.",
-            Option []    ["post-path"] (ReqArg parsePostPath    "PATH")       "specify the releative path of the URL to where the HTML posts live (requires --add).",
+            Option [] ["add-external"] (ReqArg (parseAddExt ".md") "POST.md")    "add the markdown file POST.md as an externally linked blog post to FEED.xml.",
+            Option []    ["post-path"] (ReqArg parsePostPath    "PATH")       "specify the releative path of the URL to where the HTML posts live (requires --add or --add-external).",
             Option []    ["feed-dest"] (ReqArg parseDestPath    "PATH")       "the PATH to the newly created feed (requires --add)." ]
 
 feedExt :: String
@@ -118,6 +124,14 @@ parseAdd ext path = OAdd $
  where
    fp = parseFilePath path
 
+parseAddExt :: String -> String -> Options
+parseAddExt ext path = OAddExt $
+  case fp of
+    Right p -> checkExt ext p
+    _ -> fp
+ where
+   fp = parseFilePath path   
+
 parsePostPath :: String -> Options
 parsePostPath postPathStr = OPostPath $
   case parseRelURI postPathStr of
@@ -142,6 +156,7 @@ data Args = Help
           | New FPath U.URI String
           -- Add feedPath feedDestPath postURI  mdPath
           | Add FPath FPath (Maybe U.URI) FPath
+          | AddExt FPath FPath (Maybe U.URI) FPath
  deriving Show
 
 parseNew :: String -> Either Error U.URI -> String -> Either Error Args
@@ -185,6 +200,26 @@ parseAddPostPath feed destPath (Left (Error err1)) (Left (Error err2)) = Left . 
 parseAddPostPath feed destPath (Left err) _ = Left err
 parseAddPostPath feed destPath _ (Left err) = Left err
 
+parseAddExtPostPath :: FilePath -> Maybe (Either Error FPath) -> Either Error FPath -> Either Error U.URI -> Either Error Args
+parseAddExtPostPath feed destPath (Right post) (Right path) =
+  case (parseFilePath feed, destPath) of
+    (Right feedPath, Just (Right feedDestPath)) ->
+      case (checkExt feedExt feedPath, checkExt feedExt feedDestPath) of
+        (Right _, Right _) -> Right $ AddExt feedPath feedDestPath (Just path) post
+        (Right _, Left err) -> Left err
+        (Left err, Right _) -> Left err
+        (Left (Error err1), Left (Error err2)) -> Left . Error $ err1 ++ "\n\n" ++ err2
+    (Right feedPath, Nothing) ->
+      case (checkExt feedExt feedPath) of
+        (Right _) -> Right $ AddExt feedPath feedPath (Just path) post
+        (Left err) -> Left err
+    (Left err, Nothing) -> Left err
+    (Right _, Just (Left err)) -> Left err
+    (Left (Error err1), Just (Left (Error err2))) -> Left . Error $ err1 ++ "\n\n" ++ err2
+parseAddExtPostPath feed destPath (Left (Error err1)) (Left (Error err2)) = Left . Error $ err1 ++ "\n\n" ++ err2
+parseAddExtPostPath feed destPath (Left err) _ = Left err
+parseAddExtPostPath feed destPath _ (Left err) = Left err
+
 addOpt :: FilePath -> [Options] -> Either Error Args
 addOpt feed [OAdd mpost] = parseAddPostPath feed Nothing mpost (Right U.nullURI)
 addOpt feed (OAdd mpost:OPostPath mpath:[]) = parseAddPostPath feed Nothing mpost mpath
@@ -197,15 +232,35 @@ addOpt feed (OPostPath mpath:ODestPath destPath:OAdd mpost:[]) = parseAddPostPat
 addOpt feed (OPostPath mpath:OAdd mpost:ODestPath destPath:[]) = parseAddPostPath feed (Just destPath) mpost mpath
 addOpt _ _ = Left . Error $ "in valid --add.\n\n"++help
 
+addExtOpt :: FilePath -> [Options] -> Either Error Args
+addExtOpt feed [OAddExt mpost] = parseAddExtPostPath feed Nothing mpost (Right U.nullURI)
+addExtOpt feed (OAddExt mpost:OPostPath mpath:[]) = parseAddExtPostPath feed Nothing mpost mpath
+addExtOpt feed (OPostPath mpath:OAddExt mpost:[]) = parseAddExtPostPath feed Nothing mpost mpath
+addExtOpt feed (OAddExt mpost:OPostPath mpath:ODestPath destPath:[]) = parseAddExtPostPath feed (Just destPath) mpost mpath
+addExtOpt feed (OAddExt mpost:ODestPath destPath:OPostPath mpath:[]) = parseAddExtPostPath feed (Just destPath) mpost mpath
+addExtOpt feed (ODestPath destPath:OAddExt mpost:OPostPath mpath:[]) = parseAddExtPostPath feed (Just destPath) mpost mpath
+addExtOpt feed (ODestPath destPath:OPostPath mpath:OAddExt mpost:[]) = parseAddExtPostPath feed (Just destPath) mpost mpath
+addExtOpt feed (OPostPath mpath:ODestPath destPath:OAddExt mpost:[]) = parseAddExtPostPath feed (Just destPath) mpost mpath
+addExtOpt feed (OPostPath mpath:OAddExt mpost:ODestPath destPath:[]) = parseAddExtPostPath feed (Just destPath) mpost mpath
+addExtOpt _ _ = Left . Error $ "in valid --add.\n\n"++help
+
 isAdd :: Options -> Bool
 isAdd (OAdd _) = True
 isAdd _ = False
 
+isAddExt :: Options -> Bool
+isAddExt (OAddExt _) = True
+isAddExt _ = False
+
 hasAdd :: [Options] -> Bool
 hasAdd = foldr (\o r -> if isAdd o then True else r) False
+
+hasAddExt :: [Options] -> Bool
+hasAddExt = foldr (\o r -> if isAddExt o then True else r) False
 
 checkInputs :: [Options] -> [String] -> Either Error Args
 checkInputs [OHelp] [] = Right Help
 checkInputs o [feed] | ONew `elem` o = newOpt feed o
 checkInputs o [feed] | hasAdd o = addOpt feed o
-checkInputs _ _ = Left . Error $ "Invalid options see --help."
+checkInputs o [feed] | hasAddExt o = addExtOpt feed o
+checkInputs o feed = Left . Error . show $ feed
