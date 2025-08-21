@@ -7,20 +7,17 @@ module Lib (
 
 import Utils
 
-import Data.Text as T
-import Data.Text.Lazy as L
-import Data.XML.Types as XML
+import qualified Data.Text as T
+import qualified Data.Text.Lazy as L
 import qualified Text.Atom.Feed as Atom
 import qualified Text.Atom.Feed.Export as Export (textFeed)
 import qualified Text.Feed.Import as Import (parseFeedFromFile)
-import qualified Text.Feed.Query as Query (getFeedHome)
 import qualified Text.Feed.Types as Types
 
 import Data.Time.Clock  as C
 import Data.Time.Calendar
 
 import qualified Text.Pandoc as P
-import qualified Data.Text.IO as TIO
 import qualified Text.Pandoc.Shared as TS
 
 hook :: Args -> IO ()
@@ -71,7 +68,7 @@ getMeta path = do
   let postPath = filePath path
   mkd <- (readFile postPath) >>= (return . T.pack)
   P.runIO $ do
-    (P.Pandoc m b) <- P.readMarkdown readerOpts mkd
+    (P.Pandoc m _) <- P.readMarkdown readerOpts mkd
     let titleP = T.unpack $ TS.stringify $ P.docTitle m
     let dateP = T.unpack $ TS.stringify $ P.docDate m
     let eurl' = P.lookupMeta (T.pack "external-url") m
@@ -93,33 +90,33 @@ getMeta path = do
       (Nothing, Just (P.MetaInlines abstract'')) -> do
         let abstractStr = T.unpack $ TS.stringify $ abstract'' 
         return $ Right (titleP, dateP, Nothing, abstractStr)
-      (Nothing, Nothing) -> do
+      (_, _) -> do
         return $ Right (titleP, dateP, Nothing, "")
 
 -- Builds the absoulte url to the post located at postPath.  The
 -- returned URL is of the form:
 --     freeId/mpostsPath/postpath
 postURL :: URI -> Maybe URI -> FPath -> Maybe URI
-postURL feedId mpostsPath postPath =
+postURL _feedId mpostsPath postPath =
   case mpostsPath of
     Just postsPath ->
       do postFile <- parseRelURI postRel
-         (feedId `appendRelURI` postsPath) >>= (\x -> appendRelURI x postFile)
+         (_feedId `appendRelURI` postsPath) >>= (\x -> appendRelURI x postFile)
     Nothing ->
       do postFile <- parseRelURI postRel
-         appendRelURI feedId postFile
+         appendRelURI _feedId postFile
  where
    postRel :: FilePath
    postRel = filePath $ (replaceExt ".html" $ fileName postPath)
 
 getFeedId :: Types.Feed -> Either Error URI
-getFeedId (Types.AtomFeed (Atom.Feed id _ _ _ _ _ _ _ _ _ _ _ _ _ _)) = parseURI . T.unpack $ id
-getFeedId feed = Left . Error $ "Failed to parse feed"
+getFeedId (Types.AtomFeed (Atom.Feed _id _ _ _ _ _ _ _ _ _ _ _ _ _ _)) = parseURI . T.unpack $ _id
+getFeedId _ = Left . Error $ "Failed to parse feed"
 
 feedId :: FPath -> Types.Feed -> Either Error URI
 feedId feedPath feed =
   case getFeedId feed of  
-    Right id -> Right id
+    Right _id -> Right _id
     Left _ -> Left . Error $ "Failed to retrieve url from feed: "++(show feedPath)
 
 importFeed :: FPath -> IO (Either Error Types.Feed)
@@ -130,9 +127,9 @@ importFeed (filePath -> feedPath) = do
     Nothing -> Left . Error $ "Failed to parse feed: "++(show feedPath)    
 
 entry :: String -> String -> String -> String -> String -> Atom.Entry
-entry id title date url abstract =
+entry _id title date url abstract =
   (Atom.nullEntry
-     (T.pack id)
+     (T.pack _id)
      (Atom.TextString (T.pack title))
      (T.pack date))
   { Atom.entryAuthors = [Atom.nullPerson]
@@ -141,26 +138,26 @@ entry id title date url abstract =
   }
 
 updateFeed :: Types.Feed -> Atom.Entry -> IO (Maybe Atom.Feed)
-updateFeed (Types.AtomFeed feed) entry = do
+updateFeed (Types.AtomFeed feed) _entry = do
   date <- todayText
   return . Just $ feed { Atom.feedUpdated = date,
-                         Atom.feedEntries = entry:(Atom.feedEntries feed) } 
+                         Atom.feedEntries = _entry:(Atom.feedEntries feed) } 
 updateFeed _ _ = return Nothing
 
 add :: FPath -> FPath -> Maybe URI -> FPath -> IO ()
 add feedPath feedDestPath postPath post = do    
   d <- getMeta post
   case d of
-    Right (Right (t,d,Nothing,a)) -> do
+    Right (Right (t,_d,Nothing,a)) -> do
       mfeed <- importFeed feedPath
       case mfeed of
         Right feed -> do
           let mid = feedId feedPath feed
           case mid of
-            Right id -> do
-              case postURL id postPath post of
+            Right _id -> do
+              case postURL _id postPath post of
                 Just url -> do
-                  let newEntry = entry (uriToString id) t d (uriToString url) a
+                  let newEntry = entry (uriToString _id) t _d (uriToString url) a
                   mupFeed <- updateFeed feed newEntry
                   case mupFeed of
                     Just updatedFeed -> do                      
@@ -169,6 +166,7 @@ add feedPath feedDestPath postPath post = do
                 Nothing -> putStrErr $ "Failed to retrieve url from feed: "++(show feed)
             Left (Error err) -> putStrErr err
         Left (Error err) -> putStrErr err
+    Right (Right (_,_,Just _,_)) -> putStrErr "Unimplemented feature."
     Right (Left err) -> putStrErr $ "Failed to retrieve metadata from post: "++(errorToStr err)  
     Left e -> putStrErr $ "Failed to retrieve metadata from post: "++(show e)  
 
@@ -176,14 +174,14 @@ addExt :: FPath -> FPath -> Maybe URI -> FPath -> IO ()
 addExt feedPath feedDestPath postPath post = do    
   d <- getMeta post
   case d of
-    Right (Right (t,a,(Just eurl),d)) -> do
+    Right (Right (t,a,(Just eurl),_d)) -> do
       mfeed <- importFeed feedPath
       case mfeed of
         Right feed -> do
           let mid = feedId feedPath feed
           case mid of
-            Right id -> do
-              let newEntry = entry (uriToString id) t d (uriToString eurl) a
+            Right _id -> do
+              let newEntry = entry (uriToString _id) t _d (uriToString eurl) a
               mupFeed <- updateFeed feed newEntry
               case mupFeed of
                 Just updatedFeed ->
@@ -191,6 +189,6 @@ addExt feedPath feedDestPath postPath post = do
                 Nothing -> putStrErr $ "Failed to add "++(show postPath)++" to feed "++(show feed)                
             Left (Error err) -> putStrErr err
         Left (Error err) -> putStrErr err
-    Right (Right (t,a,Nothing,d)) -> putStrErr $ "Failed to retrieve metadata from post: "++(show post)  
+    Right (Right (_,_,Nothing,_)) -> putStrErr $ "Failed to retrieve metadata from post: "++(show post)  
     Right (Left err) -> putStrErr $ "Failed to retrieve metadata from post: "++(errorToStr err)  
     Left e -> putStrErr $ "Failed to retrieve metadata from post: "++(show e)  
