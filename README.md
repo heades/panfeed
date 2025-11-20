@@ -42,3 +42,5 @@ and records the new entry as located on your site at
 Simply clone this repo and run `stack build && stack install`, but
 this assumes [https://docs.haskellstack.org/en/stable/README/](stack)
 in installed.
+
+Requires that `pkg-config` is installed on the build system.
